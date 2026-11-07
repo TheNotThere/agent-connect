@@ -1,0 +1,13 @@
+# Private runtime state and conversations
+bridge_data/
+*.log
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
+Thumbs.db
+dist/

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Bridge</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6a66; --line: #e3e1db;
+    --claude: #c96442; --claude-bg: #fbeee8; --codex: #10a37f; --codex-bg: #e6f6f1;
+    --other: #5b6ee1; --other-bg: #eceefc; --sys-bg: #efede8; --sum-bg: #fff7dd; --sum-line: #e3c45a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614; --panel: #1f1f1d; --text: #ecebe6; --muted: #9a988f; --line: #33322e;
+      --claude-bg: #3a261e; --codex-bg: #15312a; --other-bg: #23274a; --sys-bg: #2a2926;
+      --sum-bg: #352e14; --sum-line: #8a7426;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; height: 100vh;
+         display: flex; flex-direction: column; }
+  header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 16px;
+           display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  h1 { font-size: 16px; margin: 0; }
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 12px;
+          display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #999; }
+  .dot.on { background: #2fbf71; } .dot.wait { background: #e6a700; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .spacer { flex: 1; }
+  .meter { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .bar { width: 100px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--other); width: 0; transition: width .3s; }
+  button { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--panel);
+           color: var(--text); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  .task { background: var(--panel); border-bottom: 1px solid var(--line); padding: 8px 16px;
+          font-size: 13px; color: var(--muted); }
+  .task b { color: var(--text); }
+  .stopped { color: #d6453d; font-weight: 600; }
+  main { flex: 1; overflow-y: auto; padding: 16px; }
+  .feed { max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 78%; border-radius: 10px; padding: 8px 12px; border: 1px solid var(--line); }
+  .msg .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; display: flex; gap: 8px; }
+  .msg .who { font-weight: 600; }
+  .msg .body { white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
+  .msg pre { background: rgba(127,127,127,.12); padding: 8px; border-radius: 6px; overflow-x: auto;
+             white-space: pre; margin: 6px 0; font: 12px/1.4 ui-monospace, Consolas, monospace; }
+  .msg.claude { align-self: flex-start; background: var(--claude-bg); }
+  .msg.claude .who { color: var(--claude); }
+  .msg.codex { align-self: flex-end; background: var(--codex-bg); }
+  .msg.codex .who { color: var(--codex); }
+  .msg.other { align-self: flex-start; background: var(--other-bg); }
+  .msg.other .who { color: var(--other); }
+  .msg.done { outline: 2px solid #2fbf71; }
+  .sys { align-self: center; background: var(--sys-bg); color: var(--muted); font-size: 12px;
+         padding: 4px 12px; border-radius: 999px; text-align: center; max-width: 90%; }
+  .summary { align-self: stretch; background: var(--sum-bg); border: 1px dashed var(--sum-line);
+             border-radius: 10px; padding: 8px 12px; }
+  .summary .meta { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+  .summary .body { white-space: pre-wrap; }
+  .old { opacity: .45; }
+  .empty { text-align: center; color: var(--muted); margin-top: 15vh; }
+  .empty code { background: var(--panel); border: 1px solid var(--line); padding: 2px 6px; border-radius: 4px; }
+  @media (max-width: 600px) { .msg { max-width: 92%; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent Bridge</h1>
+  <div class="pills" id="pills"></div>
+  <div class="spacer"></div>
+  <div class="meter" title="Un-summarized history size. At 100% the next agent is asked to compact.">
+    context <div class="bar"><div id="bar"></div></div> <span id="meterText"></span>
+  </div>
+  <label style="font-size:12px;color:var(--muted)"><input type="checkbox" id="showOld" checked> show compacted</label>
+  <button id="stopBtn">Stop session</button>
+  <button id="resetBtn">New session</button>
+</header>
+<div class="task" id="task"></div>
+<main id="scroller"><div class="feed" id="feed"></div></main>
+<script>
+const COMPACT_CHARS = 20000;
+let state = null, messages = [];
+const $ = id => document.getElementById(id);
+
+function esc(s) { return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function renderText(t) {
+  // fenced code blocks -> <pre>, everything else escaped plain text
+  return t.split(/```[^\n]*\n?/).map((part, i) => i % 2 ? `<pre>${esc(part)}</pre>` : esc(part)).join('');
+}
+function cls(name) { return name === 'claude' || name === 'codex' ? name : 'other'; }
+function time(ts) { return new Date(ts * 1000).toLocaleTimeString(); }
+
+function msgEl(m) {
+  const d = document.createElement('div');
+  const old = state && m.id <= state.summary_upto;
+  if (m.kind === 'system') {
+    d.className = 'sys'; d.textContent = `${m.from}: ${m.text}`;
+  } else if (m.kind === 'summary') {
+    d.className = 'summary';
+    d.innerHTML = `<div class="meta">Context compacted by ${esc(m.from)} at ${time(m.ts)}. Agents now see only this summary plus newer messages.</div><div class="body">${esc(m.text)}</div>`;
+  } else {
+    d.className = `msg ${cls(m.from)}${m.kind === 'done' ? ' done' : ''}`;
+    d.innerHTML = `<div class="meta"><span class="who">${esc(m.from)}</span><span>to ${esc(m.to)}</span><span>#${m.id}</span><span>${time(m.ts)}</span>${m.kind === 'done' ? '<span>DONE</span>' : ''}</div><div class="body">${renderText(m.text)}</div>`;
+  }
+  if (old) d.classList.add('old');
+  d.dataset.id = m.id;
+  return d;
+}
+
+function renderFeed() {
+  const feed = $('feed'); feed.innerHTML = '';
+  const show = $('showOld').checked;
+  const list = messages.filter(m => show || !state || m.id > state.summary_upto);
+  if (!list.length) {
+    feed.innerHTML = '<div class="empty">Waiting for agents.<br><br>Tell Codex or Claude to run <code>python bridge.py join --as codex</code></div>';
+    return;
+  }
+  list.forEach(m => feed.appendChild(msgEl(m)));
+  scrollDown(true);
+}
+
+function scrollDown(force) {
+  const s = $('scroller');
+  if (force || s.scrollHeight - s.scrollTop - s.clientHeight < 200) s.scrollTop = s.scrollHeight;
+}
+
+function renderState() {
+  if (!state) return;
+  const names = new Set(['claude', 'codex', ...Object.keys(state.agents || {})]);
+  $('pills').innerHTML = [...names].map(n => {
+    const a = (state.agents || {})[n];
+    const dot = !a ? '' : a.waiting ? 'wait' : a.online ? 'on' : '';
+    const label = !a ? 'not joined' : a.waiting ? 'listening' : a.online ? 'working' : 'offline';
+    return `<span class="pill"><span class="dot ${dot}"></span><b>${esc(n)}</b> ${label}</span>`;
+  }).join('');
+  const pct = Math.min(100, Math.round(100 * (state.live_chars || 0) / COMPACT_CHARS));
+  $('bar').style.width = pct + '%';
+  $('meterText').textContent = `${state.live_count} msgs, ${pct}%`;
+  $('task').innerHTML = (state.stopped ? '<span class="stopped">STOPPED</span> ' : '') +
+    'Task: ' + (state.task ? `<b>${esc(state.task)}</b>` : '<i>none set yet</i>');
+}
+
+async function load() {
+  const r = await fetch('/api/state'); const s = await r.json();
+  messages = s.messages; state = s; renderState(); renderFeed();
+}
+
+function connect() {
+  const es = new EventSource('/events');
+  es.onmessage = e => {
+    const ev = JSON.parse(e.data);
+    if (ev.type === 'message') {
+      messages.push(ev.message);
+      if ($('feed').querySelector('.empty')) $('feed').innerHTML = '';
+      $('feed').appendChild(msgEl(ev.message)); scrollDown();
+    } else if (ev.type === 'state') {
+      const prevUpto = state ? state.summary_upto : 0;
+      state = { ...state, ...ev.state }; renderState();
+      if (state.summary_upto !== prevUpto) renderFeed();
+    } else if (ev.type === 'reset') {
+      state = ev.state; messages = ev.state.messages; renderState(); renderFeed();
+    }
+  };
+  es.onerror = () => { es.close(); setTimeout(() => { load().catch(()=>{}); connect(); }, 2000); };
+}
+
+$('showOld').onchange = renderFeed;
+$('stopBtn').onclick = () => fetch('/api/stop', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+$('resetBtn').onclick = () => {
+  if (confirm('Archive this transcript and start a new session?')) fetch('/api/reset', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+};
+load().then(connect);
+</script>
+</body>
+</html>
